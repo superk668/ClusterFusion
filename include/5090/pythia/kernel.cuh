@@ -11,9 +11,9 @@ namespace cg = cooperative_groups;
 #define NEOX_STYLE_ROPE
 
 __forceinline__ __device__ float ptx_exp2(float x) {
-    float y;
-    asm volatile("ex2.approx.ftz.f32 %0, %1;" : "=f"(y) : "f"(x));
-    return y;
+  float y;
+  asm volatile("ex2.approx.ftz.f32 %0, %1;" : "=f"(y) : "f"(x));
+  return y;
 }
 
 __global__ void __cluster_dims__(CLUSTER_SIZE, 1, 1) PythiaDecoderLayerKernel(
@@ -24,6 +24,7 @@ __global__ void __cluster_dims__(CLUSTER_SIZE, 1, 1) PythiaDecoderLayerKernel(
     half* ln_weight,        // [hidden_dim] - LayerNorm weight
     half* ln_bias,          // [hidden_dim] - LayerNorm bias
     half* qkv_bias,         // [3 * num_heads * head_dim] - QKV projection bias
+    half* o_bias,           // [hidden_dim] - Output projection bias
     float* cos,             // [head_dim]
     float* sin,             // [head_dim]
     half* k_cache,
@@ -66,7 +67,7 @@ __global__ void __cluster_dims__(CLUSTER_SIZE, 1, 1) PythiaDecoderLayerKernel(
     uint32_t size;
     uint32_t src_addr, dst_addr, neighbor_dst_bar = 0;
     float __align__(16) qk[DEC_TILE];
-
+    
     // Init barrier
     #pragma nv_diag_suppress static_var_with_dynamic_init
     __shared__ barrier bar[4];
@@ -151,7 +152,7 @@ __global__ void __cluster_dims__(CLUSTER_SIZE, 1, 1) PythiaDecoderLayerKernel(
         for (int di = 0; di < 8; di++) {
             float val = __half2float(reg_input[di]) - local_mean;
             local_sum += val * val;
-        }
+    }
     }
     // Warp reduction for variance
     #pragma unroll
@@ -200,7 +201,7 @@ __global__ void __cluster_dims__(CLUSTER_SIZE, 1, 1) PythiaDecoderLayerKernel(
         *(uint4*)(&input_shmem[d]) = *(uint4*)(&reg_input[0]);
     }
     block.sync();
-
+    
     // ==================== QKV Projection with Interleaved Layout ====================
     // Interleaved: head i's Q at rows [i*240, i*240+80), K at [i*240+80, i*240+160), V at [i*240+160, i*240+240)
     // TMA coords: (in_dim_offset, out_dim_offset)
@@ -243,13 +244,13 @@ __global__ void __cluster_dims__(CLUSTER_SIZE, 1, 1) PythiaDecoderLayerKernel(
             #pragma unroll
             for (int d = 0; d < NUM_PER_THREAD; d++) {
                 tmp += __half2float(reg_input[d]) * __half2float(weight[TMA_LOAD_ONCE_NUM + weight_idx * TMA_LOAD_ONCE + (input_idx + i + d)]);
+                }
             }
         }
-    }
-    #pragma unroll
-    for (int mask = (NUM_THREAD_PER_ROW >> 1); mask > 0; mask >>= 1) {
-        tmp += __shfl_down_sync(0xffffffff, tmp, mask);
-    }
+        #pragma unroll
+        for (int mask = (NUM_THREAD_PER_ROW >> 1); mask > 0; mask >>= 1) {
+            tmp += __shfl_down_sync(0xffffffff, tmp, mask);
+        }
     if (lane_id % NUM_THREAD_PER_ROW == 0 && weight_idx < HEAD_DIM) {
         local_qkv[weight_idx] = __float2half(tmp);
     }
@@ -290,13 +291,13 @@ __global__ void __cluster_dims__(CLUSTER_SIZE, 1, 1) PythiaDecoderLayerKernel(
             #pragma unroll
             for (int d = 0; d < NUM_PER_THREAD; d++) {
                 tmp += __half2float(reg_input[d]) * __half2float(weight[TMA_LOAD_ONCE_NUM + weight_idx * TMA_LOAD_ONCE + (input_idx + i + d)]);
+                }
             }
         }
-    }
-    #pragma unroll
-    for (int mask = (NUM_THREAD_PER_ROW >> 1); mask > 0; mask >>= 1) {
-        tmp += __shfl_down_sync(0xffffffff, tmp, mask);
-    }
+        #pragma unroll
+        for (int mask = (NUM_THREAD_PER_ROW >> 1); mask > 0; mask >>= 1) {
+            tmp += __shfl_down_sync(0xffffffff, tmp, mask);
+        }
     if (lane_id % NUM_THREAD_PER_ROW == 0 && weight_idx < HEAD_DIM) {
         local_qkv[HEAD_DIM + weight_idx] = __float2half(tmp);
     }
@@ -337,13 +338,13 @@ __global__ void __cluster_dims__(CLUSTER_SIZE, 1, 1) PythiaDecoderLayerKernel(
             #pragma unroll
             for (int d = 0; d < NUM_PER_THREAD; d++) {
                 tmp += __half2float(reg_input[d]) * __half2float(weight[TMA_LOAD_ONCE_NUM + weight_idx * TMA_LOAD_ONCE + (input_idx + i + d)]);
+                }
             }
         }
-    }
-    #pragma unroll
-    for (int mask = (NUM_THREAD_PER_ROW >> 1); mask > 0; mask >>= 1) {
-        tmp += __shfl_down_sync(0xffffffff, tmp, mask);
-    }
+        #pragma unroll
+        for (int mask = (NUM_THREAD_PER_ROW >> 1); mask > 0; mask >>= 1) {
+            tmp += __shfl_down_sync(0xffffffff, tmp, mask);
+        }
     if (lane_id % NUM_THREAD_PER_ROW == 0 && weight_idx < HEAD_DIM) {
         local_qkv[2 * HEAD_DIM + weight_idx] = __float2half(tmp);
     }
@@ -373,7 +374,7 @@ __global__ void __cluster_dims__(CLUSTER_SIZE, 1, 1) PythiaDecoderLayerKernel(
         local_qkv[2 * HEAD_DIM + tid] = __float2half(v_val);
     }
     block.sync();
-
+    
     // ==================== RoPE (Neox-style, rotary_pct=0.25) ====================
     // Only first ROTARY_DIM (20) dimensions get RoPE
     if (tid < ROTARY_DIM) {
@@ -405,9 +406,17 @@ __global__ void __cluster_dims__(CLUSTER_SIZE, 1, 1) PythiaDecoderLayerKernel(
     // Dimensions from ROTARY_DIM to HEAD_DIM remain unchanged
     block.sync();
 
-    // ==================== Output K, V ====================
+    // ==================== Write K, V back to cache ====================
+    // Write new K, V directly to cache at position SEQ_LEN (append to cache)
+    // k_cache layout: [max_seq_len, HIDDEN_DIM] = [max_seq_len, num_heads * head_dim]
+    // For head_id, write to offset: SEQ_LEN * HIDDEN_DIM + head_id * HEAD_DIM
     cluster.sync();
     if (cluster_block_id == 0 && tid < HEAD_DIM) {
+        uint32_t cache_offset = SEQ_LEN * HIDDEN_DIM + head_id * HEAD_DIM + tid;
+        k_cache[cache_offset] = local_qkv[HEAD_DIM + tid];
+        v_cache[cache_offset] = local_qkv[2 * HEAD_DIM + tid];
+        
+        // Also write to k_output, v_output for debugging/verification (optional)
         k_output[head_id * HEAD_DIM + tid] = local_qkv[HEAD_DIM + tid];
         v_output[head_id * HEAD_DIM + tid] = local_qkv[2 * HEAD_DIM + tid];
     }
@@ -419,7 +428,7 @@ __global__ void __cluster_dims__(CLUSTER_SIZE, 1, 1) PythiaDecoderLayerKernel(
         reg_reduce[i] = 0.0f;
     // Bounds check for HEAD_DIM=80: only load if input_idx_2 < HEAD_DIM
     if (input_idx_2 < HEAD_DIM) {
-        *(uint4*)(&reg_input[0]) = *(uint4*)(&local_qkv[input_idx_2]);
+    *(uint4*)(&reg_input[0]) = *(uint4*)(&local_qkv[input_idx_2]);
     } else {
         // Zero out reg_input for threads beyond HEAD_DIM
         for (int i = 0; i < NUM_PER_THREAD; i++) {
@@ -450,16 +459,19 @@ __global__ void __cluster_dims__(CLUSTER_SIZE, 1, 1) PythiaDecoderLayerKernel(
         pre_max = local_max;
         #pragma unroll
         for (int j = 0; j < DEC_TILE; j++) {
-            // Bounds check: only load if input_idx_2 < HEAD_DIM
-            if (input_idx_2 < HEAD_DIM) {
+            // Bounds check: only load if both head_dim and seq_len valid
+            uint32_t seq_idx = cluster_block_id * KV_DIM_PER_BLOCK + weight_idx_2 + j;
+            if (input_idx_2 < HEAD_DIM && seq_idx < SEQ_LEN) {
                 *(uint4*)(&reg_weight[0]) = *(uint4*)(&weight[((id - 1) % 2) * TMA_LOAD_ONCE_NUM + (weight_idx_2 + j) * HEAD_DIM + input_idx_2]);
+                qk[j] = 0.0f;
+                #pragma unroll
+                for (int d = 0; d < NUM_PER_THREAD; d++) {
+                    qk[j] += __half2float(reg_input[d]) * __half2float(reg_weight[d]);
+                }
             } else {
+                // Masked positions: zero weights and set qk to large negative to exclude from softmax
                 for (int i = 0; i < NUM_PER_THREAD; i++) reg_weight[i] = __float2half(0.0f);
-            }
-            qk[j] = 0.0f;
-            #pragma unroll
-            for (int d = 0; d < NUM_PER_THREAD; d++) {
-                qk[j] += __half2float(reg_input[d]) * __half2float(reg_weight[d]);
+                qk[j] = -CUDART_INF_F;
             }
             #pragma unroll
             for (int mask = (NUM_THREAD_PER_ROW_2 >> 1); mask > 0; mask >>= 1) {
@@ -490,7 +502,7 @@ __global__ void __cluster_dims__(CLUSTER_SIZE, 1, 1) PythiaDecoderLayerKernel(
         bar[2 + (id - 1) % 2].wait(std::move(token[2 + (id - 1) % 2]));
         for (int j = 0; j < DEC_TILE; j++) {
             if (input_idx_2 < HEAD_DIM) {
-                *(uint4*)(&reg_weight[0]) = *(uint4*)(&weight[((id - 1) % 2) * TMA_LOAD_ONCE_NUM + TMA_LOAD_ONCE_NUM_ATTN + (weight_idx_2 + j) * HEAD_DIM + input_idx_2]);
+            *(uint4*)(&reg_weight[0]) = *(uint4*)(&weight[((id - 1) % 2) * TMA_LOAD_ONCE_NUM + TMA_LOAD_ONCE_NUM_ATTN + (weight_idx_2 + j) * HEAD_DIM + input_idx_2]);
             } else {
                 for (int i = 0; i < NUM_PER_THREAD; i++) reg_weight[i] = __float2half(0.0f);
             }
@@ -509,7 +521,7 @@ __global__ void __cluster_dims__(CLUSTER_SIZE, 1, 1) PythiaDecoderLayerKernel(
     #pragma unroll
     for (int j = 0; j < DEC_TILE; j++) {
         if (input_idx_2 < HEAD_DIM) {
-            *(uint4*)(&reg_weight[0]) = *(uint4*)(&weight[((KV_DIM_PER_BLOCK / TMA_LOAD_ONCE_ATTN - 1) % 2) * TMA_LOAD_ONCE_NUM + (weight_idx_2 + j) * HEAD_DIM + input_idx_2]);
+        *(uint4*)(&reg_weight[0]) = *(uint4*)(&weight[((KV_DIM_PER_BLOCK / TMA_LOAD_ONCE_ATTN - 1) % 2) * TMA_LOAD_ONCE_NUM + (weight_idx_2 + j) * HEAD_DIM + input_idx_2]);
         } else {
             for (int i = 0; i < NUM_PER_THREAD; i++) reg_weight[i] = __float2half(0.0f);
         }
@@ -545,7 +557,7 @@ __global__ void __cluster_dims__(CLUSTER_SIZE, 1, 1) PythiaDecoderLayerKernel(
     }
     for (int j = 0; j < DEC_TILE; j++) {
         if (input_idx_2 < HEAD_DIM) {
-            *(uint4*)(&reg_weight[0]) = *(uint4*)(&weight[((KV_DIM_PER_BLOCK / TMA_LOAD_ONCE_ATTN - 1) % 2) * TMA_LOAD_ONCE_NUM + TMA_LOAD_ONCE_NUM_ATTN + (weight_idx_2 + j) * HEAD_DIM + input_idx_2]);
+        *(uint4*)(&reg_weight[0]) = *(uint4*)(&weight[((KV_DIM_PER_BLOCK / TMA_LOAD_ONCE_ATTN - 1) % 2) * TMA_LOAD_ONCE_NUM + TMA_LOAD_ONCE_NUM_ATTN + (weight_idx_2 + j) * HEAD_DIM + input_idx_2]);
         } else {
             for (int i = 0; i < NUM_PER_THREAD; i++) reg_weight[i] = __float2half(0.0f);
         }
@@ -561,7 +573,7 @@ __global__ void __cluster_dims__(CLUSTER_SIZE, 1, 1) PythiaDecoderLayerKernel(
         if (lane_id / NUM_THREAD_PER_ROW_2 == 1) {
             pre_max = local_max;
             if (input_idx_2 < HEAD_DIM) {
-                *(uint4*)(&reg_weight[0]) = *(uint4*)(&local_qkv[HEAD_DIM + input_idx_2]);
+            *(uint4*)(&reg_weight[0]) = *(uint4*)(&local_qkv[HEAD_DIM + input_idx_2]); 
             } else {
                 for (int i = 0; i < NUM_PER_THREAD; i++) reg_weight[i] = __float2half(0.0f);
             }
@@ -587,7 +599,7 @@ __global__ void __cluster_dims__(CLUSTER_SIZE, 1, 1) PythiaDecoderLayerKernel(
                 reg_reduce[j] = reg_reduce[j] * scale;
             }
             if (input_idx_2 < HEAD_DIM) {
-                *(uint4*)(&reg_weight[0]) = *(uint4*)(&local_qkv[2 * HEAD_DIM + input_idx_2]);
+            *(uint4*)(&reg_weight[0]) = *(uint4*)(&local_qkv[2 * HEAD_DIM + input_idx_2]);
             } else {
                 for (int i = 0; i < NUM_PER_THREAD; i++) reg_weight[i] = __float2half(0.0f);
             }
@@ -603,7 +615,7 @@ __global__ void __cluster_dims__(CLUSTER_SIZE, 1, 1) PythiaDecoderLayerKernel(
     #pragma unroll
     for (int i = 0; i < NUM_PER_THREAD; i++) {
         if (tile_col * NUM_PER_THREAD + i < HEAD_DIM) {
-            weight[tile_row * HEAD_DIM + tile_col * NUM_PER_THREAD + i] = __float2half(reg_reduce[i]);
+        weight[tile_row * HEAD_DIM + tile_col * NUM_PER_THREAD + i] = __float2half(reg_reduce[i]);
         }
     }
     if (lane_id % NUM_THREAD_PER_ROW_2 == 0) {
@@ -618,7 +630,7 @@ __global__ void __cluster_dims__(CLUSTER_SIZE, 1, 1) PythiaDecoderLayerKernel(
     for(int j = 0; j < DIM_BLOCK_REDUCE / 2; j++) {
         // Bounds check for reading from shared memory
         if (tile_col * NUM_PER_THREAD < HEAD_DIM) {
-            *(uint4*)(&reg_input[0]) = *(uint4*)(&weight[j * HEAD_DIM + tile_col * NUM_PER_THREAD]);
+        *(uint4*)(&reg_input[0]) = *(uint4*)(&weight[j * HEAD_DIM + tile_col * NUM_PER_THREAD]);
         } else {
             for (int i = 0; i < NUM_PER_THREAD; i++) reg_input[i] = __float2half(0.0f);
         }
@@ -685,7 +697,7 @@ __global__ void __cluster_dims__(CLUSTER_SIZE, 1, 1) PythiaDecoderLayerKernel(
         #pragma unroll
         for (int i = 0; i < NUM_PER_THREAD; i++) {
             if (tid * NUM_PER_THREAD + i < HEAD_DIM) {
-                local_qkv[2 * HEAD_DIM + tid * NUM_PER_THREAD + i] = __float2half(reg_reduce[i]);
+            local_qkv[2 * HEAD_DIM + tid * NUM_PER_THREAD + i] = __float2half(reg_reduce[i]);
             }
         }
     }
@@ -721,12 +733,12 @@ __global__ void __cluster_dims__(CLUSTER_SIZE, 1, 1) PythiaDecoderLayerKernel(
         }
         bar[(id - 1) % 2].wait(std::move(token[(id - 1) % 2]));
         tmp = 0.0;
-        // New layout after box_size change: weight[out_idx * HEAD_DIM + in_idx]
         for (int j = 0; j < HEAD_DIM; j += NUM_PER_ROW_3) {
             *(uint4*)(&reg_input[0]) = *(uint4*)(&local_qkv[2 * HEAD_DIM + input_idx_3 + j]);
+            *(uint4*)(&reg_weight[0]) = *(uint4*)(&weight[(id - 1) % 2 * TMA_LOAD_ONCE_NUM + weight_idx_3 * HEAD_DIM + input_idx_3 + j]);
             #pragma unroll
             for (int d = 0; d < NUM_PER_THREAD; d++) {
-                tmp += __half2float(reg_input[d]) * __half2float(weight[(id - 1) % 2 * TMA_LOAD_ONCE_NUM + weight_idx_3 * HEAD_DIM + (input_idx_3 + j + d)]);
+                tmp += __half2float(reg_input[d]) * __half2float(reg_weight[d]);
             }
         }
         #pragma unroll
@@ -742,9 +754,10 @@ __global__ void __cluster_dims__(CLUSTER_SIZE, 1, 1) PythiaDecoderLayerKernel(
     tmp = 0.0;
     for (int j = 0; j < HEAD_DIM; j += NUM_PER_ROW_3) {
         *(uint4*)(&reg_input[0]) = *(uint4*)(&local_qkv[2 * HEAD_DIM + input_idx_3 + j]);
+        *(uint4*)(&reg_weight[0]) = *(uint4*)(&weight[TMA_LOAD_ONCE_NUM + weight_idx_3 * HEAD_DIM + input_idx_3 + j]);
         #pragma unroll
         for (int d = 0; d < NUM_PER_THREAD; d++) {
-            tmp += __half2float(reg_input[d]) * __half2float(weight[TMA_LOAD_ONCE_NUM + weight_idx_3 * HEAD_DIM + (input_idx_3 + j + d)]);
+            tmp += __half2float(reg_input[d]) * __half2float(reg_weight[d]);
         }
     }
     #pragma unroll
@@ -753,5 +766,17 @@ __global__ void __cluster_dims__(CLUSTER_SIZE, 1, 1) PythiaDecoderLayerKernel(
     }
     if (lane_id % NUM_THREAD_PER_ROW_3 == 0) {
         atomicAdd(&output[cluster_block_st_id + weight_idx_3 + ((DIM_PER_BLOCK / TMA_LOAD_ONCE) - 1) * TMA_LOAD_ONCE], __float2half(tmp));
+    }
+
+    // ==================== Add Output Bias ====================
+    // Use atomicAdd to avoid race conditions
+    // Each block adds bias for its portion of the output
+    for (int d = tid; d < DIM_PER_BLOCK; d += BLOCK_SIZE) {
+        int out_idx = cluster_block_st_id + d;
+        // Only the first cluster (head 0) adds the bias to avoid adding it 32 times
+        if (head_id == 0) {
+            atomicAdd(&output[out_idx], o_bias[out_idx]);
+        }
+        
     }
 }

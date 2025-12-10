@@ -20,7 +20,7 @@ print_head = 1
 if debug:
     test_run = 1
 else:
-    test_run = 100
+    test_run = 10000
 
 def initialize_rope_embeddings(rotary_dim):
     """
@@ -165,8 +165,10 @@ def test_pythia_decode_correctness():
     weight_qkv = generate_random_weights((3 * num_heads * head_dim, hidden_size))
     bias_qkv = generate_random_weights((3 * num_heads * head_dim,))
     
-    # Output projection weight: [2560, 2560]
+    # Output projection weight and bias: [2560, 2560] and [2560]
     weight_o = generate_random_weights((hidden_size, hidden_size))
+    # To match reference implementation (no bias), set bias_o to zeros
+    bias_o = torch.zeros((hidden_size,), device=weight_o.device, dtype=weight_o.dtype)
     
     # LayerNorm weight and bias
     ln_weight = generate_random_weights((1, hidden_size))
@@ -185,15 +187,17 @@ def test_pythia_decode_correctness():
         input_clone = input_tensor.clone()
         output, k, v = clusterfusion.pythia_decoder_layer(
             input_clone,          
-            weight_qkv,
+            weight_qkv,                          
             bias_qkv,             # QKV bias
-            weight_o,              
+            weight_o,
+            bias_o,
             kv_cache_full[0],
             kv_cache_full[1],           
             ln_weight,
             ln_bias,              # LayerNorm bias
             cos,                   
-            sin                    
+            sin,
+            seqlen                # Current sequence length
         )
         o_ours.append(output)
         if i == 0:
@@ -205,7 +209,7 @@ def test_pythia_decode_correctness():
     eps = 1e-5
     ln_weight_flat = ln_weight.reshape((hidden_size,))
     ln_bias_flat = ln_bias.reshape((hidden_size,))
-    
+
     # KV cache for reference: [2, seqlen, num_heads, head_dim]
     kv_cache_k = kv_cache_full[0].view(seqlen, num_heads, head_dim)
     kv_cache_v = kv_cache_full[1].view(seqlen, num_heads, head_dim)
@@ -246,7 +250,7 @@ def test_pythia_decode_correctness():
     print(f"Min MAE: {min(mae_list).item():.6f}")
     print(f"Max absolute error: {max(max_error_list).item():.6f}")
     print(f"Min absolute error: {min(max_error_list).item():.6f}")
-
+    
     avg_mae = sum(mae_list).item() / len(mae_list)
     print(f"\nAverage MAE: {avg_mae:.6f}")
     if avg_mae < 0.01:

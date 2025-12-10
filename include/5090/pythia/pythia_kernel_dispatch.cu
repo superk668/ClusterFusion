@@ -6,12 +6,14 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> pythia_decoder_layer_sm1
     torch::Tensor weight_qkv,      // [3 * num_heads * head_dim, hidden_dim] = [7680, 2560]
     torch::Tensor bias_qkv,        // [3 * num_heads * head_dim] = [7680]
     torch::Tensor weight_o,        // [hidden_dim, hidden_dim] = [2560, 2560]
-    torch::Tensor k_cache,
-    torch::Tensor v_cache,
+    torch::Tensor bias_o,          // [hidden_dim]
+    torch::Tensor k_cache,         // Full cache buffer [max_seq_len, hidden_dim]
+    torch::Tensor v_cache,         // Full cache buffer [max_seq_len, hidden_dim]
     torch::Tensor layernorm_weight,  // [hidden_dim] = [2560]
     torch::Tensor layernorm_bias,    // [hidden_dim] = [2560]
     torch::Tensor cos,
-    torch::Tensor sin
+    torch::Tensor sin,
+    int64_t current_seq_len        // Current sequence length (before appending new token)
 ) 
 {
     cudaFuncSetAttribute(PythiaDecoderLayerKernel, cudaFuncAttributeNonPortableClusterSizeAllowed, 1);
@@ -31,6 +33,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> pythia_decoder_layer_sm1
     half* weight_qkv_ptr = reinterpret_cast<half*>(weight_qkv.data_ptr<at::Half>());
     half* bias_qkv_ptr = reinterpret_cast<half*>(bias_qkv.data_ptr<at::Half>());
     half* weight_o_ptr = reinterpret_cast<half*>(weight_o.data_ptr<at::Half>());
+    half* bias_o_ptr = reinterpret_cast<half*>(bias_o.data_ptr<at::Half>());
     half* k_cache_ptr = reinterpret_cast<half*>(k_cache.data_ptr<at::Half>());
     half* v_cache_ptr = reinterpret_cast<half*>(v_cache.data_ptr<at::Half>());
     half* layernorm_weight_ptr = reinterpret_cast<half*>(layernorm_weight.data_ptr<at::Half>());
@@ -38,8 +41,14 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> pythia_decoder_layer_sm1
     float* cos_ptr = reinterpret_cast<float*>(cos.data_ptr<float>());
     float* sin_ptr = reinterpret_cast<float*>(sin.data_ptr<float>());
 
-    const uint32_t SEQ_LEN = k_cache.size(0);
-    const uint32_t KV_DIM_PER_BLOCK = ((SEQ_LEN + CLUSTER_SIZE - 1) / CLUSTER_SIZE + (TMA_LOAD_ONCE_ATTN - 1)) & ~(TMA_LOAD_ONCE_ATTN - 1);
+    // SEQ_LEN is the current cache length (before appending new token)
+    // Kernel will read cache[0:SEQ_LEN] and write to cache[SEQ_LEN]
+    // SEQ_LEN is the current valid cache length (before appending new token)
+    // Kernel will read cache[0:SEQ_LEN] and write new KV to cache[SEQ_LEN]
+    const uint32_t SEQ_LEN = static_cast<uint32_t>(current_seq_len);
+    const uint32_t seq_len = SEQ_LEN;
+    const uint32_t max_cache_size = static_cast<uint32_t>(k_cache.size(0));
+    const uint32_t KV_DIM_PER_BLOCK = ((seq_len + CLUSTER_SIZE - 1) / CLUSTER_SIZE + (TMA_LOAD_ONCE_ATTN - 1)) & ~(TMA_LOAD_ONCE_ATTN - 1);
     
     CUtensorMap tensor_map_weight{};
     CUtensorMap tensor_map_k_cache{};
@@ -71,8 +80,8 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> pythia_decoder_layer_sm1
         CUtensorMapFloatOOBfill::CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE
     );
 
-    // K cache tensor map
-    uint64_t size_k_cache[rank] = {HIDDEN_DIM, SEQ_LEN};
+    // K cache tensor map - use max cache size to allow reading future positions
+    uint64_t size_k_cache[rank] = {HIDDEN_DIM, max_cache_size};
     uint64_t stride_k_cache[rank - 1] = {HIDDEN_DIM * sizeof(half)};
     uint32_t box_size_k_cache[rank] = {HEAD_DIM, TMA_LOAD_ONCE / 2};
     uint32_t elem_stride_k_cache[rank] = {1, 1};
@@ -92,8 +101,8 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> pythia_decoder_layer_sm1
         CUtensorMapFloatOOBfill::CU_TENSOR_MAP_FLOAT_OOB_FILL_NONE
     );
 
-    // V cache tensor map
-    uint64_t size_v_cache[rank] = {HIDDEN_DIM, SEQ_LEN};
+    // V cache tensor map - use max cache size to allow reading future positions
+    uint64_t size_v_cache[rank] = {HIDDEN_DIM, max_cache_size};
     uint64_t stride_v_cache[rank - 1] = {HIDDEN_DIM * sizeof(half)};
     uint32_t box_size_v_cache[rank] = {HEAD_DIM, TMA_LOAD_ONCE / 2};
     uint32_t elem_stride_v_cache[rank] = {1, 1};
@@ -149,6 +158,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> pythia_decoder_layer_sm1
         layernorm_weight_ptr,
         layernorm_bias_ptr,
         bias_qkv_ptr,
+        bias_o_ptr,
         cos_ptr,
         sin_ptr,
         k_cache_ptr,
@@ -157,7 +167,7 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> pythia_decoder_layer_sm1
         tensor_map_k_cache,
         tensor_map_v_cache,
         tensor_map_weight_o,
-        SEQ_LEN,
+        seq_len,
         KV_DIM_PER_BLOCK
     );
     cudaDeviceSynchronize();

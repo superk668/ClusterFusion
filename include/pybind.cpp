@@ -110,12 +110,14 @@ std::tuple<torch::Tensor, torch::Tensor, torch::Tensor> pythia_decoder_layer_sm1
     torch::Tensor weight_qkv,
     torch::Tensor bias_qkv,           // QKV projection bias
     torch::Tensor weight_o,
+    torch::Tensor bias_o,             // Output projection bias
     torch::Tensor k_cache,
     torch::Tensor v_cache,
     torch::Tensor layernorm_weight,
     torch::Tensor layernorm_bias,     // LayerNorm bias
     torch::Tensor cos,
-    torch::Tensor sin
+    torch::Tensor sin,
+    int64_t current_seq_len           // Current sequence length
 );
 
 #ifdef COMPILE_SM90
