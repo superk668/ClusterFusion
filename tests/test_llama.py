@@ -117,7 +117,11 @@ def generate_random_weights(shape):
     return (torch.randn(shape) * 0.1).to(0).half()
 
 def test_llama_decode_e2e():
-    print(f"seqlen: {seqlen}")
+    print("=" * 80)
+    print("LLaMA Kernel Correctness Test")
+    print("=" * 80)
+    print(f"\nParams: hidden={hidden_size}, heads={num_heads}, head_dim={head_dim}")
+    print(f"Config: seqlen={seqlen}")
     # Generate random weights
     input_tensor = generate_random_weights((1, hidden_size)).to(0).half()
     residual = generate_random_weights((1, hidden_size)).to(0).half()
@@ -202,17 +206,24 @@ def test_llama_decode_e2e():
         max_error_pos = torch.argmax(diff).item()
         # print(f"Run {i}: Max Error {max_error.item()} at position {max_error_pos}")
 
-    print(f"Max Error in MSE of {test_run} runs", max(mse_list).item())
-    print(f"Min Error in MSE of {test_run} runs", min(mse_list).item())
-    print(f"Max Error in MAE of {test_run} runs", max(mae_list).item())
-    print(f"Min Error in MAE of {test_run} runs", min(mae_list).item())
-    print(f"Max Error in Max Errors of {test_run} runs", max(max_error_list).item())
-    print(f"Min Error in Max Errors of {test_run} runs", min(max_error_list).item())
-    print(f"Count of Max Errors > 0.1: {sum(e.item() > 0.1 for e in max_error_list)}")
-
-    max_error_value = max(max_error_list).item()
-    max_error_index = max_error_list.index(max(max_error_list))
-    print(f"Max Error occurs at run {max_error_index}, value: {max_error_value}")
+    print("\n" + "=" * 80)
+    print(f"Error Statistics ({test_run} runs)")
+    print("=" * 80)
+    print(f"  Max MSE:      {max(mse_list).item():.6f}")
+    print(f"  Min MSE:      {min(mse_list).item():.6f}")
+    print(f"  Max MAE:      {max(mae_list).item():.6f}")
+    print(f"  Min MAE:      {min(mae_list).item():.6f}")
+    print(f"  Max Abs Err:  {max(max_error_list).item():.6f}")
+    print(f"  Min Abs Err:  {min(max_error_list).item():.6f}")
+    
+    avg_mae = sum(mae_list).item() / len(mae_list)
+    print("\n" + "=" * 80)
+    print(f"Result: Average MAE = {avg_mae:.6f}")
+    if avg_mae < 0.01:
+        print("✅ TEST PASSED: Average error is acceptable")
+    else:
+        print("❌ TEST FAILED: Average error is too large")
+    print("=" * 80)
 
 if __name__ == "__main__":
     test_llama_decode_e2e()

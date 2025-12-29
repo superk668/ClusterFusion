@@ -242,7 +242,7 @@ def main():
     
     print("\nLoading model...")
     model = AutoModelForCausalLM.from_pretrained(
-        MODEL_NAME, torch_dtype=torch.float16, device_map="cuda:0"
+        MODEL_NAME, dtype=torch.float16, device_map="cuda:0"
     )
     model.eval()
     tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME)
@@ -300,14 +300,24 @@ def main():
     print("\n" + "=" * 90)
     print("Results (decode time only, excluding prefill/setup)")
     print("=" * 90)
-    header = f"{'tokens':>8} | {'CF(s)':>8} | {'Graph(s)':>8} | {'HF(s)':>8} | {'CF↑':>6} | {'Graph↑':>6} | {'match'}"
+    header = f"{'tokens':>8} | {'CF(s)':>8} | {'Graph(s)':>8} | {'HF(s)':>8} | {'CF↑':>6} | {'Graph↑':>6} | match"
     print(header)
     print("-" * 90)
     for r in results:
-        detail = f"CF:{r['matching_tokens']}/{r['total_tokens']}, Graph:{r['matching_graph']}/{r['total_tokens']}"
+        match_str = "✅" if r['match'] and r['match_graph'] else f"~{100*r['matching_tokens']//r['total_tokens']}%"
         print(
-            f"{r['tokens']:8d} | {r['cf_decode_s']:8.3f} | {r['cf_graph_s']:8.3f} | {r['hf_decode_s']:8.3f} | {r['speedup']:6.2f}x | {r['speedup_graph']:6.2f}x | {detail}"
+            f"{r['tokens']:8d} | {r['cf_decode_s']:8.3f} | {r['cf_graph_s']:8.3f} | {r['hf_decode_s']:8.3f} | {r['speedup']:5.2f}x | {r['speedup_graph']:5.2f}x | {match_str}"
         )
+    
+    # Summary
+    print("\n" + "=" * 90)
+    print("Summary")
+    print("=" * 90)
+    avg_cf = sum(r['speedup'] for r in results) / len(results)
+    avg_graph = sum(r['speedup_graph'] for r in results) / len(results)
+    print(f"Average CF speedup:    {avg_cf:.2f}x")
+    print(f"Average Graph speedup: {avg_graph:.2f}x")
+    print(f"Max Graph speedup:     {max(r['speedup_graph'] for r in results):.2f}x")
 
     # Show sample generation
     print("\n" + "=" * 90)

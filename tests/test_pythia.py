@@ -181,9 +181,12 @@ def pythia_mlp_reference(hidden_normed, mlp_up_weight, mlp_up_bias, mlp_down_wei
 
 def test_pythia_decode_correctness():
     """Test Pythia decoder layer correctness against reference implementation"""
-    print(f"Testing Pythia-2.8b decoder layer with MLP")
-    print(f"hidden_size: {hidden_size}, num_heads: {num_heads}, head_dim: {head_dim}")
-    print(f"seqlen: {seqlen}, rotary_dim: {rotary_dim}, ffn_dim: {ffn_dim}")
+    print("=" * 80)
+    print("Pythia-2.8B Kernel Correctness Test")
+    print("=" * 80)
+    print(f"\nModel: EleutherAI/pythia-2.8b")
+    print(f"Params: hidden={hidden_size}, heads={num_heads}, head_dim={head_dim}")
+    print(f"Config: seqlen={seqlen}, rotary_dim={rotary_dim}, ffn_dim={ffn_dim}")
     
     # Generate random weights and inputs
     input_tensor = generate_random_weights((1, hidden_size))
@@ -290,20 +293,24 @@ def test_pythia_decode_correctness():
         max_error = diff.max()
         max_error_list.append(max_error)
 
-    print(f"\n=== Error Statistics over {test_run} runs ===")
-    print(f"Max MSE: {max(mse_list).item():.6f}")
-    print(f"Min MSE: {min(mse_list).item():.6f}")
-    print(f"Max MAE: {max(mae_list).item():.6f}")
-    print(f"Min MAE: {min(mae_list).item():.6f}")
-    print(f"Max absolute error: {max(max_error_list).item():.6f}")
-    print(f"Min absolute error: {min(max_error_list).item():.6f}")
+    print("\n" + "=" * 80)
+    print(f"Error Statistics ({test_run} runs)")
+    print("=" * 80)
+    print(f"  Max MSE:      {max(mse_list).item():.6f}")
+    print(f"  Min MSE:      {min(mse_list).item():.6f}")
+    print(f"  Max MAE:      {max(mae_list).item():.6f}")
+    print(f"  Min MAE:      {min(mae_list).item():.6f}")
+    print(f"  Max Abs Err:  {max(max_error_list).item():.6f}")
+    print(f"  Min Abs Err:  {min(max_error_list).item():.6f}")
     
     avg_mae = sum(mae_list).item() / len(mae_list)
-    print(f"\nAverage MAE: {avg_mae:.6f}")
+    print("\n" + "=" * 80)
+    print(f"Result: Average MAE = {avg_mae:.6f}")
     if avg_mae < 0.01:
-        print("✓ TEST PASSED: Average error is acceptable")
+        print("✅ TEST PASSED: Average error is acceptable")
     else:
-        print("✗ TEST FAILED: Average error is too large")
+        print("❌ TEST FAILED: Average error is too large")
+    print("=" * 80)
 
 if __name__ == "__main__":
     test_pythia_decode_correctness()
