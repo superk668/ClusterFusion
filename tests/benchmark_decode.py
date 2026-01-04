@@ -288,6 +288,81 @@ def decode_clusterfusion_graph_context(model, prompt, num_new_tokens, state):
     return decode_time, generated_ids
 
 
+def decode_clusterfusion_split(model, prompt, num_new_tokens, state):
+    """
+    Decode using split kernels (Attention+MLPUp and MLPDown as separate kernels).
+    No cooperative launch needed, uses regular kernel launches.
+    """
+    device = next(model.parameters()).device
+    num_layers = len(model.gpt_neox.layers)
+    head_dim = 80
+    hidden_size = 2560
+    rotary_dim = 20
+
+    next_token = state["first_token"]
+    generated_ids = [next_token.item()]
+    prompt_length = state["prompt_length"]
+    all_weights = state["all_weights"]
+    kv_caches = [
+        (k.clone(), v.clone(), cur_len)
+        for (k, v, cur_len) in state["kv_caches"]
+    ]
+
+    # Precompute all RoPE embeddings
+    max_position = prompt_length + num_new_tokens
+    all_cos, all_sin = precompute_rope_embeddings(max_position, rotary_dim, head_dim, device=device)
+
+    torch.cuda.synchronize()
+    start = time.time()
+    with torch.no_grad():
+        for step in range(num_new_tokens - 1):
+            current_position = prompt_length + step
+            hidden_states = model.gpt_neox.embed_in(next_token).half().squeeze(1)
+            cos = all_cos[current_position:current_position+1]
+            sin = all_sin[current_position:current_position+1]
+
+            for layer_idx in range(num_layers):
+                weights = all_weights[layer_idx]
+                k_cache_full, v_cache_full, current_len = kv_caches[layer_idx]
+
+                hidden_states, _, _ = clusterfusion.pythia_2b8_decoder_layer_split(
+                    hidden_states,
+                    weights["qkv_weight"],
+                    weights["qkv_bias"],
+                    weights["o_weight"],
+                    weights["o_bias"],
+                    k_cache_full,
+                    v_cache_full,
+                    weights["ln_weight"],
+                    weights["ln_bias"],
+                    cos,
+                    sin,
+                    weights["post_ln_weight"],
+                    weights["post_ln_bias"],
+                    weights["mlp_up_weight"],
+                    weights["mlp_up_bias"],
+                    weights["mlp_down_weight"],
+                    weights["mlp_down_bias"],
+                    current_len,
+                )
+                kv_caches[layer_idx] = (k_cache_full, v_cache_full, current_len + 1)
+
+            hidden_states = torch.nn.functional.layer_norm(
+                hidden_states,
+                (hidden_size,),
+                model.gpt_neox.final_layer_norm.weight.data,
+                model.gpt_neox.final_layer_norm.bias.data,
+                eps=1e-5,
+            )
+            logits = model.embed_out(hidden_states)
+            next_token = torch.argmax(logits, dim=-1, keepdim=True)
+            generated_ids.append(next_token.item())
+
+    torch.cuda.synchronize()
+    decode_time = time.time() - start
+    return decode_time, generated_ids
+
+
 def decode_hf(model, input_ids, num_new_tokens):
     """
     HuggingFace decode-only timing.
@@ -336,7 +411,10 @@ def main():
     print("\nWarming up...")
     warmup_state = prepare_setup(model, tokenizer, PROMPT, 8)
     decode_clusterfusion(model, PROMPT, 8, warmup_state)
+    warmup_state = prepare_setup(model, tokenizer, PROMPT, 8)
     decode_clusterfusion_graph_context(model, PROMPT, 8, warmup_state)
+    warmup_state = prepare_setup(model, tokenizer, PROMPT, 8)
+    decode_clusterfusion_split(model, PROMPT, 8, warmup_state)
     decode_hf(model, warmup_state["input_ids"], 8)
     torch.cuda.synchronize()
 
@@ -349,6 +427,10 @@ def main():
         state2 = prepare_setup(model, tokenizer, PROMPT, num_tokens)
         cf_graph_time, ids_graph = decode_clusterfusion_graph_context(model, PROMPT, num_tokens, state2)
         
+        # Re-prepare state for split kernel test
+        state3 = prepare_setup(model, tokenizer, PROMPT, num_tokens)
+        cf_split_time, ids_split = decode_clusterfusion_split(model, PROMPT, num_tokens, state3)
+        
         hf_time, ids_hf = decode_hf(model, state["input_ids"], num_tokens)
 
         results.append(
@@ -356,35 +438,48 @@ def main():
                 "tokens": num_tokens,
                 "cf_decode_s": cf_time,
                 "cf_graph_s": cf_graph_time,
+                "cf_split_s": cf_split_time,
                 "hf_decode_s": hf_time,
                 "speedup_cf": hf_time / cf_time if cf_time > 0 else float("inf"),
                 "speedup_graph": hf_time / cf_graph_time if cf_graph_time > 0 else float("inf"),
+                "speedup_split": hf_time / cf_split_time if cf_split_time > 0 else float("inf"),
                 "match": ids_hf == (state["input_ids"][0].tolist() + ids_kernel),
                 "match_graph": ids_hf == (state["input_ids"][0].tolist() + ids_graph),
+                "match_split": ids_hf == (state["input_ids"][0].tolist() + ids_split),
             }
         )
 
-    print("\n" + "=" * 90)
+    print("\n" + "=" * 110)
     print("Results (decode time only, excluding prefill/setup)")
-    print("=" * 90)
-    header = f"{'tokens':>8} | {'CF(s)':>8} | {'Graph(s)':>8} | {'HF(s)':>8} | {'CF↑':>6} | {'Graph↑':>6} | match"
+    print("=" * 110)
+    header = f"{'tokens':>8} | {'CF(s)':>8} | {'Graph(s)':>8} | {'Split(s)':>8} | {'HF(s)':>8} | {'CF↑':>6} | {'Graph↑':>6} | {'Split↑':>6} | match"
     print(header)
-    print("-" * 90)
+    print("-" * 110)
     for r in results:
-        match_str = "✅" if r['match'] and r['match_graph'] else "⚠️"
+        match_str = "✅" if r['match'] and r['match_graph'] and r['match_split'] else "⚠️"
         print(
-            f"{r['tokens']:8d} | {r['cf_decode_s']:8.3f} | {r['cf_graph_s']:8.3f} | {r['hf_decode_s']:8.3f} | {r['speedup_cf']:5.2f}x | {r['speedup_graph']:5.2f}x | {match_str}"
+            f"{r['tokens']:8d} | {r['cf_decode_s']:8.3f} | {r['cf_graph_s']:8.3f} | {r['cf_split_s']:8.3f} | {r['hf_decode_s']:8.3f} | {r['speedup_cf']:5.2f}x | {r['speedup_graph']:5.2f}x | {r['speedup_split']:5.2f}x | {match_str}"
         )
     
     # Summary
-    print("\n" + "=" * 90)
+    print("\n" + "=" * 110)
     print("Summary")
-    print("=" * 90)
+    print("=" * 110)
     avg_cf = sum(r['speedup_cf'] for r in results) / len(results)
     avg_graph = sum(r['speedup_graph'] for r in results) / len(results)
-    print(f"Average CF speedup:    {avg_cf:.2f}x")
+    avg_split = sum(r['speedup_split'] for r in results) / len(results)
+    print(f"Average Fused speedup: {avg_cf:.2f}x")
     print(f"Average Graph speedup: {avg_graph:.2f}x")
+    print(f"Average Split speedup: {avg_split:.2f}x")
     print(f"Max Graph speedup:     {max(r['speedup_graph'] for r in results):.2f}x")
+    print(f"Max Split speedup:     {max(r['speedup_split'] for r in results):.2f}x")
+    
+    # Analysis
+    print("\n" + "=" * 110)
+    print("Analysis: Fused vs Split")
+    print("=" * 110)
+    print(f"Graph vs Fused improvement: +{(avg_graph/avg_cf - 1)*100:.1f}%")
+    print(f"Split vs Fused overhead:    {(avg_split/avg_cf - 1)*100:+.1f}%")
 
 
 if __name__ == "__main__":
