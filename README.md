@@ -221,24 +221,24 @@ These metrics specifically evaluate the decode phase optimization:
 
 Comparing different kernel configurations (Pythia-2.8B, decode-only timing):
 
-| Tokens | Fused(s) | Graph(s) | Split(s) | HF(s) | Fused↑ | **Graph↑** | Split↑ |
-|--------|----------|----------|----------|-------|--------|------------|--------|
-| 16 | 0.076 | 0.071 | 0.080 | 0.086 | 1.12x | **1.20x** | 1.07x |
-| 32 | 0.158 | 0.147 | 0.165 | 0.177 | 1.12x | **1.20x** | 1.07x |
-| 64 | 0.322 | 0.299 | 0.334 | 0.360 | 1.12x | **1.20x** | 1.08x |
-| 128 | 0.648 | 0.605 | 0.675 | 0.731 | 1.13x | **1.21x** | 1.08x |
-| 256 | 1.313 | 1.221 | 1.358 | 1.494 | 1.14x | **1.22x** | 1.10x |
-| 512 | 2.650 | 2.460 | 2.745 | 3.054 | 1.15x | **1.24x** | 1.11x |
-| 1024 | 5.352 | 4.982 | 5.536 | 6.358 | 1.19x | **1.28x** | 1.15x |
-| 2048 | 10.917 | 10.164 | 11.359 | 17.769 | 1.63x | **1.75x** | 1.56x |
+| Tokens | Split(s) | Fused(s) | Graph(s) | HF(s) | Split↑ | Fused↑ | **Graph↑** |
+|--------|----------|----------|----------|-------|--------|--------|------------|
+| 16 | 0.080 | 0.077 | 0.071 | 0.086 | 1.07x | 1.12x | **1.20x** |
+| 32 | 0.165 | 0.158 | 0.147 | 0.177 | 1.07x | 1.12x | **1.20x** |
+| 64 | 0.334 | 0.322 | 0.299 | 0.360 | 1.08x | 1.12x | **1.20x** |
+| 128 | 0.675 | 0.648 | 0.605 | 0.731 | 1.08x | 1.13x | **1.21x** |
+| 256 | 1.358 | 1.313 | 1.221 | 1.494 | 1.10x | 1.14x | **1.22x** |
+| 512 | 2.742 | 2.651 | 2.459 | 3.050 | 1.11x | 1.15x | **1.24x** |
+| 1024 | 5.537 | 5.346 | 4.982 | 6.362 | 1.15x | 1.19x | **1.28x** |
+| 2048 | 11.243 | 10.909 | 10.165 | 13.546 | 1.20x | 1.24x | **1.33x** |
 
 ### Kernel Configurations
 
 | Configuration | Description | Avg Speedup | Max Speedup |
 |---------------|-------------|-------------|-------------|
-| **Graph Mode** | Pre-created TensorMaps, static buffers | **1.25x** | **1.75x** |
-| Fused Kernel | Cooperative launch with grid.sync() | 1.16x | 1.63x |
-| Split Kernels | Two regular launches (no grid.sync) | 1.12x | 1.56x |
+| Split Kernels | Two regular launches (no grid.sync) | 1.11x | 1.20x |
+| Fused Kernel | Cooperative launch with grid.sync() | 1.15x | 1.24x |
+| **Graph Mode** | Pre-created TensorMaps, static buffers | **1.23x** | **1.33x** |
 
 ### Hybrid Configuration Analysis
 
