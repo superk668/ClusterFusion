@@ -294,7 +294,7 @@ def decode_graph(state, num_tokens):
 # Benchmark
 # =============================================================================
 PROMPT = "The meaning of life is"
-TOKEN_COUNTS = [32, 64, 128, 256]
+TOKEN_COUNTS = [16, 32, 64, 128, 256, 512, 1024, 2048]
 
 print("\n" + "=" * 90)
 print("Benchmark: Decode Time Only (excluding prefill)")
