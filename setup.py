@@ -25,6 +25,7 @@ if _arch == "sm120a":
         # Pythia-2.8B
         "include/5090/pythia_2b8/pythia_kernel_dispatch.cu",
         "include/5090/pythia_2b8/pythia_kernel_dispatch_graph.cu",
+        "include/5090/pythia_2b8/pythia_kernel_dispatch_split.cu",
         # Pythia-6.9B
         "include/5090/pythia_6b9/pythia_kernel_dispatch.cu",
         "include/5090/pythia_6b9/pythia_kernel_dispatch_graph.cu",
